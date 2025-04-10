@@ -79,12 +79,6 @@ pub fn uuencode(data: &[u8]) -> Result<String, UUEncodeError> {
     Ok(encoded)
 }
 
-/// Converts the length of the input data to the length of the encoded data.
-#[inline]
-fn raw_to_encoded_len(input_len: usize) -> usize {
-    ((input_len + 2) / 3) * 4
-}
-
 #[inline]
 fn encoded_to_raw_len(encoded_len: usize) -> usize {
     ((encoded_len + 3) / 4) * 3
