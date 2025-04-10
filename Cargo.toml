@@ -5,7 +5,7 @@ edition = "2024"
 
 description = "A lightweight implementation of uuencode and uudecode in Rust"
 homepage = "https://github.com/freeone3000/uuencode_lite_rs"
-repository = "git@github.com:freeone3000/uuencode_lite_rs.git"
+repository = "https://github.com/freeone3000/uuencode_lite_rs"
 readme = "README.md"
 license = "MIT"
 keywords = ["uuencode", "uudecode", "encoding"]
