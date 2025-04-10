@@ -1,15 +1,16 @@
-use std::io::{Write};
-
 /// An error representing malformed input data.
 /// This can occur due to invalid line lengths or invalid characters.
 #[derive(Debug)]
-struct DecodingError {
+pub struct UUEncodeError {
+    /// The input line that the encoding error is on.
     line: usize,
+    /// The input character that the encoding error is on.
     character: usize,
+    /// A descriptive (hopefully) message about the error.
     msg: String,
 }
-impl std::error::Error for DecodingError {}
-impl std::fmt::Display for DecodingError {
+impl std::error::Error for UUEncodeError {}
+impl std::fmt::Display for UUEncodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} at line {} character {}", self.msg, self.line, self.character)
     }
@@ -20,7 +21,7 @@ macro_rules! ok_or_decode_error {
         match $f($input) {
             Some(value) => value,
             None => {
-                return Err(DecodingError {
+                return Err(UUEncodeError {
                     line: $cur_line,
                     character: $cur_char,
                     msg: format!("Invalid character in input: {}", $input as char),
@@ -34,7 +35,16 @@ macro_rules! ok_or_decode_error {
 /// This function encodes the data in chunks of 45 bytes, each prefixed with the length of the line.
 /// The output will be separated into 61-character lines, with the first character being the *decoded*
 /// length of the line (45 or less).
-pub fn uuencode(data: &[u8]) -> Result<String, DecodingError> {
+/// Example:
+/// ```rust
+/// fn encode() -> Result<(), uuencode_lite::UUEncodeError> {
+///    let data = b"cat";
+///    let encoded = uuencode_lite::uuencode(data)?;
+///    println!("{}", encoded); // prints "#8V%T"
+///    Ok(())
+/// }
+/// ```
+pub fn uuencode(data: &[u8]) -> Result<String, UUEncodeError> {
     let mut encoded = String::new();
     let mut buffer = [0u8; 3];
     let mut cur_line = 0;
@@ -69,59 +79,73 @@ pub fn uuencode(data: &[u8]) -> Result<String, DecodingError> {
     Ok(encoded)
 }
 
+/// Converts the length of the input data to the length of the encoded data.
+#[inline]
+fn raw_to_encoded_len(input_len: usize) -> usize {
+    ((input_len + 2) / 3) * 4
+}
+
+#[inline]
+fn encoded_to_raw_len(encoded_len: usize) -> usize {
+    ((encoded_len + 3) / 4) * 3
+}
+
 /// Decodes a string from uuencoded format back into a byte array.
 /// Mirrors uuencode. Will accept ' ' or '`' as 36. Will strip padding.
 /// Example:
 /// ```rust
-/// use uudecode_lite::uudecode;
-/// let data = "#8V%T";
-/// let decoded = uudecode(data.as_bytes());
-/// println!("{}", decoded); // prints "cat"
+/// fn decode() -> Result<(), uuencode_lite::UUEncodeError> {
+///     let data = "#8V%T";
+///     let decoded = uuencode_lite::uudecode(data.as_bytes())?;
+///     println!("{}", String::from_utf8_lossy(&decoded)); // prints "cat"
+///     Ok(())
+/// }
 /// ```
-pub fn uudecode(data: &[u8]) -> Result<Vec<u8>, DecodingError> {
-    let mut decoded = Vec::new();
+pub fn uudecode(data: &[u8]) -> Result<Vec<u8>, UUEncodeError> {
+    // allocate a vec internally, then handle utf-8 conversion at the end. This avoids Unicode errors.
+    let mut decoded = Vec::with_capacity(encoded_to_raw_len(data.len()));
     let mut buffer = [0u8; 4];
     let mut cur_line = 0;
 
     let mut input_iter = data.into_iter();
     loop {
-        let mut cur_char = 0;
+        let mut cur_input_char = 0;
+        let mut cur_output_char = 0;
 
         // Decode the length of the line
         let next_token = input_iter.next();
-        let line_len: usize = match next_token {
+        let output_char_count: usize = match next_token {
             None => return Ok(decoded),
             Some(ch) => {
-                decode_char(*ch).ok_or(DecodingError {
-                    line: cur_line,
-                    character: cur_char,
-                    msg: format!("Invalid character in length: {}", *ch as char),
-                })?.into()
-            }
+                ok_or_decode_error!(decode_char, *ch, cur_line, cur_input_char) as usize
+            },
         };
-        let line = input_iter.by_ref().take(line_len).collect::<Vec<_>>();
-
         // Decode the rest of the line
-        for chunk in line.chunks(4) {
-            if chunk.len() < 4 {
-                break;
-            }
+        loop {
+            let mut chunk = [0u8;4];
+            let input_chunk = input_iter.by_ref().take(4).copied().collect::<Vec<_>>();
+            chunk[..].copy_from_slice(&input_chunk);
 
-            buffer[0] = ok_or_decode_error!(decode_char, *chunk[0], cur_line, cur_char);
-            buffer[1] = ok_or_decode_error!(decode_char, *chunk[1], cur_line, cur_char+1);
-            buffer[2] = ok_or_decode_error!(decode_char, *chunk[2], cur_line, cur_char+2);
-            buffer[3] = ok_or_decode_error!(decode_char, *chunk[3], cur_line, cur_char+3);
+            buffer[0] = ok_or_decode_error!(decode_char, chunk[0], cur_line, cur_input_char);
+            buffer[1] = ok_or_decode_error!(decode_char, chunk[1], cur_line, cur_input_char+1);
+            buffer[2] = ok_or_decode_error!(decode_char, chunk[2], cur_line, cur_input_char+2);
+            buffer[3] = ok_or_decode_error!(decode_char, chunk[3], cur_line, cur_input_char+3);
             // assumes high bits are zero
-            decoded.push((buffer[0] << 2) | (buffer[1] >> 4));
+            decoded.push(((buffer[0] << 2) | (buffer[1] >> 4)).into());
             let byte2 = (buffer[1] << 4) | (buffer[2] >> 2);
-            if byte2 != 0 {
-                decoded.push(byte2);
+            if cur_output_char+1 < output_char_count {
+                decoded.push(byte2.into());
             }
             let byte3 = (buffer[2] << 6) | buffer[3];
-            if byte3 != 0 {
-                decoded.push(byte3);
+            if cur_output_char+2 < output_char_count {
+                decoded.push(byte3.into());
             }
-            cur_char += 4;
+
+            cur_output_char += 3;
+            cur_input_char += 4;
+            if cur_output_char >= output_char_count {
+                break;
+            }
         }
         input_iter.next(); // discard newline
         cur_line += 1;
@@ -142,7 +166,7 @@ pub fn encode_char(value: u8) -> Option<u8> {
 /// Decodes a UUEncoded character into a 6-bit value.
 #[inline]
 pub fn decode_char(value: u8) -> Option<u8> {
-    if value == b'`' {
+    if value == b'`' || value == 0 {
         Some(0)
     } else {
         value.checked_sub(32)
@@ -182,14 +206,39 @@ mod tests {
         assert_eq!(actual, expected_data, "can uuencode random data");
     }
 
+    /// Tests decoding cat
+    #[test]
+    fn test_decode_cat() {
+        let data = b"#8V%T";
+        let encoded = uudecode(data).unwrap();
+        assert_eq!(String::from_utf8_lossy(&encoded), "cat", "can uuencode a small text");
+    }
+
+    /// Tests decoding the text of the public domain work, The Machine Stops
+    #[test]
+    fn test_decode_the_machine_stops() {
+        let source_data = std::fs::read("test_data/the_machine_stops.txt.uu").expect("Can open test data");
+        let original_data = std::fs::read("test_data/the_machine_stops.txt").expect("Can open test data");
+        let orig_as_str = String::from_utf8_lossy(&original_data);
+        let decoded = uudecode(&source_data).unwrap();
+        assert_eq!(String::from_utf8_lossy(&decoded), orig_as_str, "can uudecode a large text");
+    }
+
+    /// Tests decoding just the last line of The Machine Stops, to debug a particular issue.
+    #[test]
+    fn test_can_decode_last_line() {
+        let data = b".;W)K+`HQ.38X*2X*,C4`";
+        let encoded = uudecode(data).unwrap();
+        assert_eq!(String::from_utf8_lossy(&encoded), "ork,\n1968).\n25", "can uudecode a small text");
+    }
+
     /// Tests round-trip execution
     #[test]
     fn test_rt() {
         let source_data = std::fs::read("test_data/the_machine_stops.txt").expect("Can open test data");
         let source_as_string = String::from_utf8_lossy(&source_data).trim_end().to_string();
-        let encoded = uuencode(&source_data);
-        let vec = uudecode(&source_data).unwrap();
-        let decoded = String::from_utf8_lossy(&vec).to_string();
-        assert_eq!(decoded, source_as_string, "can uuencode and uudecode");
+        let encoded = uuencode(&source_data).unwrap();
+        let decoded = uudecode(encoded.as_bytes()).unwrap();
+        assert_eq!(String::from_utf8_lossy(&decoded), source_as_string, "can uuencode and uudecode");
     }
 }
