@@ -3,4 +3,12 @@ name = "uuencode_lite"
 version = "0.1.0"
 edition = "2024"
 
+description = "A lightweight implementation of uuencode and uudecode in Rust"
+homepage = "https://github.com/freeone3000/uuencode_lite_rs"
+repository = "git@github.com:freeone3000/uuencode_lite_rs.git"
+readme = "README.md"
+license = "MIT"
+keywords = ["uuencode", "uudecode", "encoding"]
+categories = ["encoding"]
+
 [dependencies]
